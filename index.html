@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title> The Wolf (No API)</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Feather Icons for UI elements -->
+    <script src="https://unpkg.com/feather-icons"></script>
+
+    <style>
+        /* Custom styles for the chat application */
+        body {
+            font-family: 'Inter', sans-serif;
+            
+        }
+        /* Style for the scrollbar in the chat messages area */
+        #chat-messages::-webkit-scrollbar {
+            width: 8px;
+            background: black;
+        }
+        #chat-messages::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        #chat-messages::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 4px;
+        }
+        #chat-messages::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <!-- Main application container -->
+    <div id="app" class="flex flex-col h-screen max-w-2xl mx-auto antialiased">
+
+        <!-- Username Setup View -->
+        <div id="username-view" class="flex items-center justify-center h-full">
+            <div class="text-center p-8 bg-white rounded-2xl shadow-xl w-full max-w-sm">
+                <h1 class="text-3xl font-bold text-gray-900 mb-2">Welcome Friends </h1>
+                <p class="text-gray-600 mb-6">Enter a username for this Chat.</p>
+                <form id="username-form">
+                    <input type="text" id="username-input" placeholder="Your Name" required class="w-full text-center p-3 bg-gray-100 rounded-lg border-2 border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition mb-4">
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition duration-300 ease-in-out transform hover:scale-105">
+                        Start Chatting
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Chat View -->
+        <div id="chat-view" class="hidden flex-1 flex flex-col">
+            <!-- Header -->
+            <header class="bg-white shadow-md p-4 rounded-b-2xl z-10">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h1 class="text-xl font-bold text-gray-900">welcome to my Chatting World</h1>
+                        <p class="text-sm text-gray-500">Enjoy Chatting.</p>
+                    </div>
+                     <button id="clear-chat-button" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300">
+                        Clear Chat
+                    </button>
+                </div>
+            </header>
+
+            <!-- Chat Messages Area -->
+            <main id="chat-messages" class="flex-1 p-4 overflow-y-auto">
+                <!-- Messages will be dynamically inserted here -->
+            </main>
+
+            <!-- Message Input Form -->
+            <footer class="p-4 bg-white rounded-t-2xl">
+                <form id="message-form" class="flex items-center space-x-3">
+                    <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" required class="flex-1 p-3 bg-gray-100 rounded-lg border-2 border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold p-3 rounded-lg transition duration-300 ease-in-out transform hover:scale-105">
+                        <i data-feather="send" class="w-6 h-6"></i>
+                    </button>
+                </form>
+            </footer>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM ELEMENTS ---
+        const usernameView = document.getElementById('username-view');
+        const chatView = document.getElementById('chat-view');
+        const usernameForm = document.getElementById('username-form');
+        const usernameInput = document.getElementById('username-input');
+        const clearChatButton = document.getElementById('clear-chat-button');
+        
+        const messageForm = document.getElementById('message-form');
+        const messageInput = document.getElementById('message-input');
+        const chatMessages = document.getElementById('chat-messages');
+
+        // --- APP STATE ---
+        // Use sessionStorage to store info for this tab only.
+        // It's cleared when the tab is closed.
+        let currentUsername = sessionStorage.getItem('chat_username');
+        // This unique ID helps us know if a message came from this tab or another.
+        const tabId = sessionStorage.getItem('chat_tab_id') || `tab_${Date.now()}_${Math.random()}`;
+        sessionStorage.setItem('chat_tab_id', tabId);
+
+        // The key for storing messages in localStorage, shared across all tabs.
+        const MESSAGES_KEY = 'local_chat_messages';
+
+        // --- HELPER FUNCTIONS ---
+
+        /**
+         * Scrolls the chat messages container to the bottom.
+         */
+        function scrollToBottom() {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        /**
+         * Renders all messages from localStorage to the screen.
+         */
+        function renderMessages() {
+            const messages = JSON.parse(localStorage.getItem(MESSAGES_KEY) || '[]');
+            chatMessages.innerHTML = ''; // Clear existing messages
+            
+            messages.forEach(message => {
+                const isCurrentUser = message.tabId === tabId;
+                const messageWrapper = document.createElement('div');
+                messageWrapper.className = `flex items-start gap-2.5 mb-4 ${isCurrentUser ? 'justify-end' : ''}`;
+
+                const messageBubble = document.createElement('div');
+                messageBubble.className = `flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 rounded-e-xl rounded-es-xl ${isCurrentUser ? 'bg-blue-600 text-white' : 'bg-white'}`;
+
+                if (!isCurrentUser) {
+                    const usernameElement = document.createElement('p');
+                    usernameElement.className = 'text-sm font-semibold text-gray-900';
+                    usernameElement.textContent = message.username;
+                    messageBubble.appendChild(usernameElement);
+                }
+
+                const textElement = document.createElement('p');
+                textElement.className = 'text-sm font-normal py-2.5';
+                textElement.textContent = message.text;
+                messageBubble.appendChild(textElement);
+
+                const timeElement = document.createElement('span');
+                timeElement.className = `text-sm font-normal ${isCurrentUser ? 'text-blue-200' : 'text-gray-500'}`;
+                timeElement.textContent = message.time;
+                messageBubble.appendChild(timeElement);
+
+                messageWrapper.appendChild(messageBubble);
+                chatMessages.appendChild(messageWrapper);
+            });
+
+            scrollToBottom();
+        }
+
+        /**
+         * Handles the form submission for setting the username.
+         * @param {Event} e The form submission event.
+         */
+        function handleUsernameSubmit(e) {
+            e.preventDefault();
+            const username = usernameInput.value.trim();
+            if (username) {
+                currentUsername = username;
+                sessionStorage.setItem('chat_username', username);
+                showChatView();
+            }
+        }
+
+        /**
+         * Handles the form submission for sending a new message.
+         * @param {Event} e The form submission event.
+         */
+        function handleMessageSubmit(e) {
+            e.preventDefault();
+            const messageText = messageInput.value.trim();
+            if (messageText && currentUsername) {
+                const newMessage = {
+                    text: messageText,
+                    username: currentUsername,
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    tabId: tabId // Identify which tab sent the message
+                };
+
+                // Get current messages, add the new one, and save back to localStorage
+                const messages = JSON.parse(localStorage.getItem(MESSAGES_KEY) || '[]');
+                messages.push(newMessage);
+                localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages));
+
+                // Manually render for the current tab
+                renderMessages();
+                messageInput.value = ''; // Clear the input
+            }
+        }
+        
+        /**
+         * Clears all messages from localStorage and the UI.
+         */
+        function clearChatHistory() {
+             if (confirm("Are you sure you want to delete all messages for everyone? This cannot be undone.")) {
+                localStorage.removeItem(MESSAGES_KEY);
+                // Manually trigger a render to clear the screen immediately
+                renderMessages();
+            }
+        }
+
+        // --- VIEW MANAGEMENT ---
+
+        function showChatView() {
+            usernameView.classList.add('hidden');
+            chatView.classList.remove('hidden');
+            chatView.classList.add('flex');
+            feather.replace(); // Re-render icons after view change
+            renderMessages();
+        }
+
+        function showUsernameView() {
+            usernameView.classList.remove('hidden');
+            chatView.classList.add('hidden');
+            chatView.classList.remove('flex');
+        }
+
+        // --- EVENT LISTENERS ---
+
+        // Listen for username submission
+        usernameForm.addEventListener('submit', handleUsernameSubmit);
+
+        // Listen for new message submission
+        messageForm.addEventListener('submit', handleMessageSubmit);
+        
+        // Listen for the clear chat button
+        clearChatButton.addEventListener('click', clearChatHistory);
+
+        // This is the core of the real-time functionality.
+        // It listens for changes to localStorage that happen in OTHER tabs.
+        window.addEventListener('storage', (event) => {
+            // If the key that changed is our messages key, re-render the chat.
+            if (event.key === MESSAGES_KEY) {
+                renderMessages();
+            }
+        });
+
+        // --- INITIALIZATION ---
+        
+        // On page load, decide which view to show
+        if (currentUsername) {
+            showChatView();
+        } else {
+            showUsernameView();
+        }
+
+    </script>
+</body>
+</html>
+
