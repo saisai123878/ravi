@@ -1,15 +1,18 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "broker.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "broker.js"
-    }
-  ]
+  "name": "websocket-message-relay",
+  "version": "1.0.0",
+  "description": "WebSocket Message Relay - Routes messages between controller and implants",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["websocket", "relay", "broker"],
+  "license": "MIT"
 }
