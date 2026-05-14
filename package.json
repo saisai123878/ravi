@@ -1,16 +1,15 @@
 {
-  "name": "server",
-  "version": "1.0.0",
+  "name": "c2-broker",
+  "version": "2.0.0",
+  "description": "C2 WebSocket Relay Broker — Cloud deployable",
   "main": "broker.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node broker.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "mqtt": "^5.15.1",
-    "ws": "^8.20.1"
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
