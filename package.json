@@ -1,15 +1,15 @@
 {
-  "name": "c2-broker",
-  "version": "2.0.0",
-  "description": "C2 WebSocket Relay Broker — Cloud deployable",
-  "main": "broker.js",
-  "scripts": {
-    "start": "node broker.js"
-  },
-  "dependencies": {
-    "ws": "^8.16.0"
-  },
-  "engines": {
-    "node": ">=18"
-  }
+  "version": 2,
+  "builds": [
+    {
+      "src": "broker.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "broker.js"
+    }
+  ]
 }
