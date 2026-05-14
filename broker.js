@@ -10,11 +10,31 @@ const path = require('path');
 // ---- Configuration ----
 const PORT = process.env.PORT || 8080;
 const AUTH_TOKEN = process.env.BROKER_TOKEN || 'default-token-2026';
-const DATA_DIR = path.join(__dirname, 'data');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+// ---- Fix: Use /tmp for serverless (Vercel, AWS Lambda) ----
+const DATA_DIR = (() => {
+  const possible = [
+    path.join(__dirname, 'data'),
+    '/tmp/data',
+    '/tmp'
+  ];
+  for (const dir of possible) {
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      // Verify we can actually write
+      fs.accessSync(dir, fs.constants.W_OK);
+      console.log(`Data directory: ${dir}`);
+      return dir;
+    } catch {
+      continue;
+    }
+  }
+  // Last resort: disable file saving entirely
+  console.warn('No writable data directory found \u2014 file saving disabled');
+  return null;
+})();
 
 // ---- WebSocket ----
 let WebSocket;
@@ -42,11 +62,16 @@ function log(msg) {
 }
 
 function saveData(clientId, label, payload) {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `${label}_${clientId}_${ts}.json`;
-  const filepath = path.join(DATA_DIR, filename);
-  fs.writeFileSync(filepath, JSON.stringify(payload, null, 2));
-  log(`Saved: ${filename}`);
+  if (!DATA_DIR) return; // No writable directory \u2014 skip saving
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `${label}_${clientId}_${ts}.json`;
+    const filepath = path.join(DATA_DIR, filename);
+    fs.writeFileSync(filepath, JSON.stringify(payload, null, 2));
+    log(`Saved: ${filename}`);
+  } catch (e) {
+    log(`Save failed (non-fatal): ${e.message}`);
+  }
 }
 
 function parseQuery(url) {
